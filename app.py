@@ -1,137 +1,182 @@
 import anthropic
+import openai
+from google import genai
 from dotenv import load_dotenv
-import os 
+import os
 import json
 
 load_dotenv()
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+claude_client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+
+def detect_switch(question):
+    message = claude_client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=10,
+        system="You detect if the user wants to change/switch the conversation partner. Reply only with YES or NO.",
+        messages=[{"role": "user", "content": question}]
+    )
+    return message.content[0].text.strip() == "YES"
+
+def get_claude_response(question, persona, chat_history):
+    chat_history.append({"role": "user", "content": question})
+    message = claude_client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=256,
+        system=(
+            f"You are {persona['name']}. {persona['style']}. "
+            f"Be brief, max 3 sentences. "
+            f"Never use markdown, headers, bullet points or bold text. Plain text only. "
+            f"Respond in the same language the user writes in."
+        ),
+        messages=chat_history
+    )
+    reply = message.content[0].text
+    chat_history.append({"role": "assistant", "content": reply})
+    return reply
+
+def get_openai_response(question, persona, chat_history):
+    chat_history.append({"role": "user", "content": question})
+    message = openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=256,
+        messages=[{"role": "system", "content": (
+            f"You are {persona['name']}. {persona['style']}. "
+            f"Be brief, max 3 sentences. "
+            f"Never use markdown, headers, bullet points or bold text. Plain text only. "
+            f"Respond in the same language the user writes in."
+        )}] + chat_history
+    )
+    reply = message.choices[0].message.content
+    chat_history.append({"role": "assistant", "content": reply})
+    return reply
+
+def get_gemini_response(question, persona, chat_history):
+    full_history = "\n".join([f"{m['role']}: {m['content']}" for m in chat_history])
+    prompt = f"{full_history}\nuser: {question}" if full_history else question
+    message = gemini_client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"You are {persona['name']}. {persona['style']}. Be brief, max 3 sentences. Never use markdown. Plain text only. Respond in the same language the user writes in.\n\n{prompt}"
+    )
+    reply = message.text
+    chat_history.append({"role": "user", "content": question})
+    chat_history.append({"role": "assistant", "content": reply})
+    return reply
+
+def get_response(question, persona, chat_history):
+    if persona["name"] == "Nietzsche":
+        return get_claude_response(question, persona, chat_history)
+    elif persona["name"] == "Marcus Aurelius":
+        return get_openai_response(question, persona, chat_history)
+    elif persona["name"] == "Walter White":
+        return get_gemini_response(question, persona, chat_history)
+
+os.makedirs("conversations", exist_ok=True)
 
 with open("personas.json") as f:
     data = json.load(f)
-os.makedirs("sohbetler", exist_ok=True)
 
-dosyalar = os.listdir("sohbetler")
+files = os.listdir("conversations")
 
-if dosyalar:
+if files:
     print("\nSaved conversations:")
-    for i, dosya in enumerate(dosyalar):
-        print(f"{i+1}. {dosya.replace('.json', '')}")
+    for i, file in enumerate(files):
+        print(f"{i+1}. {file.replace('.json', '')}")
     print("0. Start new conversation")
-    secim = input("Your choice: ")
-    
-    if secim == "0":
-        isim = input("Conversation name: ")
-        gecmisler = {
+    choice = input("Your choice: ")
+
+    if choice == "0":
+        name = input("Conversation name: ")
+        history = {
             "Nietzsche": [],
             "Marcus Aurelius": [],
             "Walter White": []
         }
     else:
-        dosya = dosyalar[int(secim) - 1]
-        isim = dosya.replace(".json", "")
-        with open(f"sohbetler/{dosya}") as f:
-            gecmisler = json.load(f)
+        file = files[int(choice) - 1]
+        name = file.replace(".json", "")
+        with open(f"conversations/{file}") as f:
+            history = json.load(f)
 else:
-    isim = input("Conversation name")
-
-def degistir_mi(soru):
-    mesaj = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=10,
-        system="You detect if the user wants to change/switch the conversation partner. Reply only with YES or NO.",
-        messages=[{"role": "user", "content": soru}]
-    )
-    return mesaj.content[0].text.strip() == "YES"
-
-def persona_cevap(soru, persona, gecmis):
-    gecmis.append({"role": "user", "content": soru})
-    mesaj = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=256,
-        system=(
-            f"You are {persona['name']}. {persona['style']}. Respond in Turkish. "
-            f"Be brief, max 3 sentences. "
-            f"Never use markdown, headers, bullet points or bold text. Plain text only. "
-            f"You are in a philosophical conversation with Nietzsche, Marcus Aurelius, and Walter White. "
-            f"You know who the others are and what they stand for. You can agree or disagree with them."
-            f"When referencing other personas, only do so if their actual response is directly relevant. Never fabricate or assume what they said."
-            f"Only reference another persona if you have actually seen their response in this conversation. Never assume or fabricate what they might say."
-            f"If the user asks to change or switch the persona in any language, treat it as a change request and respond only with the word 'CHANGE'."
-        ),
-        messages=gecmis
-    )
-    cevap = mesaj.content[0].text
-    gecmis.append({"role": "assistant", "content": cevap})
-    return cevap
-gecmisler = {
-    "Nietzsche": [],
-    "Marcus Aurelius": [],
-    "Walter White": []
-}
-
-print("\nWho do you want to talk to?")
-print("1. Nietzsche")
-print("2. Marcus Aurelius")
-print("3. Walter White")
-print("4. All")
-secim = input("Your choice (1/2/3/4): ")
-
-if secim == "1":
-    persona = data["personas"][0]
-elif secim == "2":
-    persona = data["personas"][1]
-elif secim == "3":
-    persona = data["personas"][2]
-elif secim == "4":
-    persona = None  # hepsi demek
-else:
-    print("Invalid choice.")
-    exit()
+    name = input("Conversation name: ")
+    history = {
+        "Nietzsche": [],
+        "Marcus Aurelius": [],
+        "Walter White": []
+    }
 
 while True:
-    soru = input("Your question: ")
+    print("\nWho do you want to talk to?")
+    print("1. Nietzsche")
+    print("2. Marcus Aurelius")
+    print("3. Walter White")
+    print("4. All")
+    choice = input("Your choice (1/2/3/4): ")
 
-    if soru.strip().lower() == "exit":
-        with open(f"sohbetler/{isim}.json", "w") as f:
-            json.dump(gecmisler, f, ensure_ascii=False, indent=2)
-        print(f"Conversation '{isim}' saved.")
+    if choice == "1":
+        persona = data["personas"][0]
+        break
+    elif choice == "2":
+        persona = data["personas"][1]
+        break
+    elif choice == "3":
+        persona = data["personas"][2]
+        break
+    elif choice == "4":
+        persona = None
+        break
+    else:
+        print("Invalid choice. Please try again.")
+
+while True:
+    question = input("\nYour question: ")
+
+    if question.strip().lower() == "exit":
+        with open(f"conversations/{name}.json", "w") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        print(f"Conversation '{name}' saved.")
         print("Goodbye.")
         break
 
-    if degistir_mi(soru):
-        print("\nWho do you want to talk to?")
-        print("1. Nietzsche")
-        print("2. Marcus Aurelius")
-        print("3. Walter White")
-        print("4. All")
-        secim = input("Your choice (1/2/3/4): ")
-        if secim == "1":
-            persona = data["personas"][0]
-        elif secim == "2":
-            persona = data["personas"][1]
-        elif secim == "3":
-            persona = data["personas"][2]
-        elif secim == "4":
-            persona = None
+    if detect_switch(question):
+        while True:
+            print("\nWho do you want to talk to?")
+            print("1. Nietzsche")
+            print("2. Marcus Aurelius")
+            print("3. Walter White")
+            print("4. All")
+            choice = input("Your choice (1/2/3/4): ")
+            if choice == "1":
+                persona = data["personas"][0]
+                break
+            elif choice == "2":
+                persona = data["personas"][1]
+                break
+            elif choice == "3":
+                persona = data["personas"][2]
+                break
+            elif choice == "4":
+                persona = None
+                break
+            else:
+                print("Invalid choice. Please try again.")
         continue
 
     if persona is None:
-        onceki_cevaplar = ""
+        previous_responses = ""
         for p in data["personas"]:
-            gecmis = gecmisler[p["name"]]
-            tam_soru = soru
-            if onceki_cevaplar:
-                tam_soru = soru + "\n\nDiğer karakterlerin bu soruya verdikleri cevaplar:\n" + onceki_cevaplar
-            cevap = persona_cevap(tam_soru, p, gecmis)
+            chat_history = history[p["name"]]
+            full_question = question
+            if previous_responses:
+                full_question = question + "\n\nOther characters' responses:\n" + previous_responses
+            reply = get_response(full_question, p, chat_history)
             print(f"\n{p['name']}:")
-            print(cevap)
-            onceki_cevaplar += f"\n{p['name']}: {cevap}"
+            print(reply)
+            previous_responses += f"\n{p['name']}: {reply}"
     else:
-        gecmis = gecmisler[persona["name"]]
-        cevap = persona_cevap(soru, persona, gecmis)
+        chat_history = history[persona["name"]]
+        reply = get_response(question, persona, chat_history)
         print(f"\n{persona['name']}:")
-        print(cevap)
-    
-
-    
+        print(reply)
